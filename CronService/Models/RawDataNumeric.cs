@@ -9,5 +9,13 @@ namespace CronService.Models
         public decimal Value { get; set; }
         public decimal Quality { get; set; }
         public DateTimeOffset TimestampInsert { get; set; }
+
+        public RawDataNumeric(int idMeasuring, DateTimeOffset timestamp, decimal value, decimal quality)
+        {
+            IdMeasuring = idMeasuring;
+            Timestamp = timestamp;
+            Value = value;
+            Quality = quality;
+        }
     }
 }

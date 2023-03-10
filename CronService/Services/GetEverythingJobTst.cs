@@ -3,36 +3,28 @@ using CronService.Factories;
 using CronService.Helpers;
 using CronService.Interfaces;
 using CronService.Models;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Internal;
 using Quartz;
-using System;
-using System.IO;
-using System.Security.Cryptography.X509Certificates;
-using YamlDotNet.RepresentationModel;
-using YamlDotNet.Serialization;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace CronService.Services
 {
     public class GetEverythingJobTst : IJob
     {
         private readonly ILogger<GetEverythingJobTst> _logger;
-        private readonly PgContext _pgContext;
-        private readonly DevContext _devContext;
         private readonly DbFactory _dbFactory;
         private DateTimeOffset _fireTime;
+        private DevContext _devContext = new DevContext();
 
         public GetEverythingJobTst(ILogger<GetEverythingJobTst> logger, DbFactory dbFactory, IConfiguration configuration)
         {
             _logger = logger;
-            _devContext = dbFactory.CreateDevContext();
-            _pgContext = dbFactory.CreatePgContext();
             _dbFactory = dbFactory;
             YamlHelper.Configure(configuration);
         }
 
         public async Task Execute(IJobExecutionContext context)
         {
+            _devContext = _dbFactory.CreateDevContext();
             _fireTime = context.FireTimeUtc.ToOffset(TimeSpan.FromHours(2));
             string cron = context.JobDetail.Key.Name;
             List<CronConfig> cronConfigs = _devContext.CronConfigs!.Select(x => x).Where(x => x.Cron == cron).ToList();
@@ -41,18 +33,16 @@ namespace CronService.Services
             cronConfigs.ForEach(x => tasks.Add(GetCalculationValue(x)));
 
             await Task.WhenAll(tasks);
-            await _devContext.SaveChangesAsync();
-
-            YamlHelper.SaveYAML();
 
             _devContext.Dispose();
-            _pgContext.Dispose();
         }
 
         private async Task GetCalculationValue(CronConfig cronConfig)
         {
             try
             {
+                DevContext devContext = _dbFactory.CreateDevContext();
+                PgContext pgContext = _dbFactory.CreatePgContext();
                 string frTb = cronConfig.FromTable!;
                 string toTb = cronConfig.ToTable!;
                 string key = cronConfig.IdMeasuring.ToString() + cronConfig.ToTable + cronConfig.Type;
@@ -67,21 +57,19 @@ namespace CronService.Services
 
                 Console.WriteLine($"job name: {cronConfig.Cron} {cronConfig.Type}");
 
-                IQueryable<IValue> dbSet = _pgContext.Set<IValue>(dbSetType);
+                IQueryable<IValue> dbSet = pgContext.Set<IValue>(dbSetType);
                 if (!dbSet.Any())
-                    dbSet = _devContext.Set<IValue>(dbSetType);
+                    dbSet = devContext.Set<IValue>(dbSetType);
 
                 List<DateTimeOffset> missedTimes = GetMissedTimes(cronConfig, _fireTime, oldTime);
-                if (missedTimes.Count > 1)
-                    CalculateMissedValue(cronConfig, dbSet, missedTimes);
+                await CalculateMissedValue(cronConfig, dbSet, missedTimes);
 
-                var result = dbSet.GetCalculation(cronConfig, oldTime, _fireTime);
+                YamlHelper.SaveYAML();
 
-                YamlHelper.UpdateOldTimeYAML(_fireTime, key);
+                _logger.LogInformation(1, message: $"Job worked at: {_fireTime} From: {frTb} To: {toTb}");
 
-                await _devContext.AddAsync(result);
-
-                _logger.LogInformation(message: $"Job worked at: {_fireTime} From: {frTb} To: {toTb}");
+                devContext.Dispose();
+                pgContext.Dispose();
             }
             catch (Exception e)
             {
@@ -98,23 +86,29 @@ namespace CronService.Services
             }
         }
 
-        private void CalculateMissedValue(CronConfig cronConfig, IQueryable<IValue> dbSet, List<DateTimeOffset> missedTimes)
+        private async Task CalculateMissedValue(CronConfig cronConfig, IQueryable<IValue> dbSet, List<DateTimeOffset> missedTimes)
         {
             DateTimeOffset prevTime = DateTimeOffset.MinValue;
 
-            missedTimes.ForEach(currTime =>
+            foreach (var currTime in missedTimes)
             {
                 using (DevContext db = _dbFactory.CreateDevContext())
                 {
                     if (prevTime != DateTimeOffset.MinValue)
                     {
-                        var tst = dbSet.GetCalculation(cronConfig, prevTime, currTime);
-                        db.Add(tst);
-                        db.SaveChanges();
+                        var res = dbSet.GetCalculation(cronConfig, prevTime, currTime);
+                        if (res != null)
+                        {
+                            await db.AddAsync(res);
+                            _logger.LogInformation(message: $"{currTime} is done, id: {cronConfig.IdMeasuring}");
+                        }
+                        else
+                            _logger.LogWarning(message: $"{currTime} is null right now, id: {cronConfig.IdMeasuring}");
                     }
                     prevTime = currTime;
+                    await db.SaveChangesAsync();
                 }
-            });
+            }
         }
 
         private DateTimeOffset GetOldTime(CronConfig cronConfig)
@@ -141,11 +135,11 @@ namespace CronService.Services
         {
             List<DateTimeOffset> missedTimes = new List<DateTimeOffset>();
             TimeSpan missedTime = fireTime - oldTime;
-            int missedMinutes = (int)Math.Floor(missedTime.TotalMinutes);
-            int missedHours = (int)Math.Floor(missedTime.TotalHours);
-            int missedDays = (int)Math.Floor(missedTime.TotalDays);
+            int missedMinutes = (int)Math.Floor(missedTime.TotalMinutes) + 1;
+            int missedHours = (int)Math.Floor(missedTime.TotalHours) + 1;
+            int missedDays = (int)Math.Floor(missedTime.TotalDays) + 1;
 
-            if (cronConfig.ToTable.Contains("minutes", StringComparison.InvariantCultureIgnoreCase))
+            if (cronConfig.ToTable!.Contains("minutes", StringComparison.InvariantCultureIgnoreCase))
             {
                 missedTimes = Enumerable.Range(0, missedMinutes).Select(n => oldTime.AddMinutes(n)).Where(n => n <= fireTime).ToList();
             }

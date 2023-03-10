@@ -44,7 +44,7 @@ namespace CronService.Data
 
                 entity.Property(e => e.IdMeasuring).HasColumnName("id_measuring");
 
-                entity.Property(e => e.Quality).HasColumnName("quality");
+                entity.Property(e => e.Quality).HasPrecision(4, 0).HasColumnName("quality");
 
                 entity.Property(e => e.Timestamp).HasColumnName("timestamp");
 

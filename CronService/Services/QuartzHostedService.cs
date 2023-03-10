@@ -46,6 +46,11 @@ namespace CronService.Services
 
         public async Task StopAsync(CancellationToken cancellationToken)
         {
+            if (File.Exists("TimeConfig.yaml"))
+            {
+                File.Delete("TimeConfig.yaml");
+            }
+
             await Scheduler!.Shutdown(cancellationToken);
         }
 
